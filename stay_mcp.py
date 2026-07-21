@@ -118,7 +118,7 @@ class StayAPIError(Exception):
 
 class StayClient:
 	def __init__(self) -> None:
-		base = os.getenv("STAY_MCP_API_URL", "http://localhost:5000/api/v1/mcp")
+		base = os.getenv("STAY_MCP_API_URL", "https://stay.prestoghana.com/api/v1/mcp")
 		self.base_url = base.rstrip("/")
 		self.api_key = os.getenv("STAY_API_KEY", "").strip()
 
