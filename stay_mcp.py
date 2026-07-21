@@ -560,24 +560,5 @@ async def unassign_room(user_id: int) -> dict[str, Any]:
 			"data": {},
 		}
 
-_http_app = mcp.streamable_http_app()
-
-_allowed_public_hosts = {
-    "localhost",
-    "localhost:8000",
-    "localhost:5000",
-    "127.0.0.1",
-    "127.0.0.1:8000",
-    "127.0.0.1:5000",
-    "a96c-154-161-133-161.ngrok-free.app",
-    "a96c-154-161-133-161.ngrok-free.app:443",
-    "a96c-154-161-133-161.ngrok-free.app:80",
-}
-
-_http_app = with_allowed_hosts(_http_app, _allowed_public_hosts)
-
-_mcp_bearer_token = os.getenv("MCP_BEARER_TOKEN", "").strip()
-app = with_bearer_auth(_http_app, _mcp_bearer_token) if _mcp_bearer_token else _http_app
-
 if __name__ == "__main__":
     mcp.run(transport="http", port=8010)
