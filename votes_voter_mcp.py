@@ -18,6 +18,7 @@ Run:
 
 import json
 import os
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -65,6 +66,16 @@ number and a photo (they can send it here; it arrives as "Image Url: ..."), then
 
 Complaints, refunds or anything you can't solve: file_complaint with the details and any payment
 ref from check_my_votes, and tell them the team will follow up. Don't promise refunds.
+
+Who you're talking to: each turn comes with live context about the person texting: their WhatsApp
+name, their verified number, how long and how much they've voted, their latest payments, anything
+they've been nominated for, events they organise and complaints they've made. Treat them as someone
+you know. Use their first name now and then (it's their WhatsApp name, so drop it if it isn't a
+name). Don't ask for anything the context already answers, and use it to work out what they want:
+a nominee asking about their code, a voter whose payment is still pending, someone following up on
+a complaint. Don't recite their history back unprompted, and never share one person's details with
+anyone else. Organisers get no special powers here; for changes to their event, point them to their
+dashboard on prestovotes.com.
 """.strip()
 
 _jwks = jwt.PyJWKClient(Q_JWKS_URL, cache_keys=True, lifespan=3600)
@@ -104,10 +115,15 @@ def require_q_context(asgi_app):
     return gated
 
 
+def _caller() -> dict[str, Any]:
+    """Who Q says is texting (phone, WhatsApp name, whether the phone is verified), from the signed context."""
+    claims = verify_context(get_http_headers(include={CONTEXT_HEADER}).get(CONTEXT_HEADER))
+    return claims.get("user") or {}
+
+
 def _voter_phone() -> str | None:
     """The sender's verified phone, from the context Q signed for this request."""
-    claims = verify_context(get_http_headers(include={CONTEXT_HEADER}).get(CONTEXT_HEADER))
-    user = claims.get("user") or {}
+    user = _caller()
     return user.get("phone") if user.get("phone_verified") else None
 
 
@@ -205,10 +221,16 @@ async def check_my_votes() -> dict[str, Any]:
 
 @mcp.tool(annotations=WRITE)
 async def nominate(slug: str, category: str, name: str, nominee_phone: str, photo_url: str,
-                   description: str | None = None, institution: str | None = None) -> dict[str, Any]:
+                   description: str | None = None, institution: str | None = None,
+                   whatsapp_number: str | None = None, whatsapp_consent: bool = False) -> dict[str, Any]:
     """
     Nominate someone in an event that's open for nominations. The nominee gets an SMS and the
-    organisers review it before it appears.
+    organisers review it before it appears. If you also pass their WhatsApp number with consent,
+    we congratulate them on WhatsApp and say we'll let them know when voting starts.
+
+    Before passing whatsapp_number, ask the voter whether the nominee agrees to the PrestoVotes
+    WhatsApp AI messaging them, and only set whatsapp_consent=true when they say yes. If the voter
+    is nominating themselves from this chat, their WhatsApp number is the one they're messaging from.
 
     Args:
         slug: the event's slug
@@ -218,10 +240,13 @@ async def nominate(slug: str, category: str, name: str, nominee_phone: str, phot
         photo_url: the photo the voter sent (the URL after "Image Url:")
         description: optional short reason or bio
         institution: optional school, company or group
+        whatsapp_number: optional WhatsApp number to message the nominee on
+        whatsapp_consent: true only once the voter confirms the nominee agrees to WhatsApp messages
     """
     return await _api("POST", "/nominations", body={
         "slug": slug, "category": category, "name": name, "nominee_phone": nominee_phone, "photo_url": photo_url,
-        "description": description, "institution": institution})
+        "description": description, "institution": institution,
+        "whatsapp_number": whatsapp_number, "whatsapp_consent": whatsapp_consent is True})
 
 
 @mcp.tool(annotations=WRITE)
@@ -239,19 +264,106 @@ async def file_complaint(message: str, ref: str | None = None, event: str | None
 
 
 @mcp.resource("q://context", name="voter_context", mime_type="text/plain",
-              description="This voter's recent payments, given to the assistant before each turn.")
+              description="Who is texting: their WhatsApp name, voting history, latest payments, nominations, "
+                          "events they run and recent complaints, given to the assistant before each turn.")
 async def voter_context() -> str:
+    try:
+        user = _caller()
+    except ContextError:
+        return "This conversation couldn't be verified, so nothing is known about who is texting."
+    who = _who_line(user)
+    if not (user.get("phone") and user.get("phone_verified")):
+        return who + "\nTheir number isn't verified (not on WhatsApp, or it's hidden), so voting and their history aren't available."
+    result = await _api("GET", "/me")
+    if not result.get("success"):
+        # PrestoVotes without /me yet (older deploy): the payments and nominations calls still work.
+        return "\n\n".join(part for part in [who, await _payments_context(), await _nominations_context()] if part).strip()
+    me = result.get("data") or {}
+    parts = [who, _history_text(me.get("voting")), _payments_text(me.get("recentPayments") or []),
+             _nominations_text(me.get("nominations") or []), _runs_text(me.get("runs") or []),
+             _complaints_text(me.get("complaints") or [])]
+    return "\n\n".join(p for p in parts if p).strip()
+
+
+def _who_line(user: dict) -> str:
+    name = (user.get("name") or "").strip()
+    phone = user.get("phone")
+    line = "Texting now: " + (f"{name} (their WhatsApp name)" if name else "someone with no WhatsApp name set")
+    if phone:
+        line += f", {phone}" + (" (verified by WhatsApp)" if user.get("phone_verified") else "")
+    return line + "."
+
+
+def _month(iso: str | None) -> str:
+    try:
+        return datetime.fromisoformat(iso).strftime("%b %Y") if iso else "?"
+    except ValueError:
+        return "?"
+
+
+def _history_text(voting: dict | None) -> str:
+    if not voting:
+        return "New to PrestoVotes: no paid votes from this number yet."
+    top_events = ", ".join(f"{e['event']} ({e['votes']:,} votes)" for e in voting.get("topEvents") or [])
+    top_nominees = ", ".join(f"{n['nominee']} at {n['event']} ({n['votes']:,})" for n in voting.get("topNominees") or [])
+    lines = [f"Voting with us since {_month(voting.get('firstVoteAt'))}, last voted {_month(voting.get('lastVoteAt'))}: "
+             f"{voting.get('paidPayments', 0):,} paid payments, {voting.get('votes', 0):,} votes, GHS {voting.get('spent', 0):,.2f} in all."]
+    if top_events:
+        lines.append(f"Votes most in: {top_events}.")
+    if top_nominees:
+        lines.append(f"Top nominees they've backed: {top_nominees}.")
+    return "\n".join(lines)
+
+
+def _payments_text(rows: list) -> str:
+    if not rows:
+        return ""
+    lines = [f"- {str(r.get('createdAt') or '')[:16].replace('T', ' ')} UTC: {r.get('votes')} vote{'' if r.get('votes') == 1 else 's'} for {r.get('nominee')} "
+             f"({r.get('event')}), GHS {float(r.get('amount') or 0):.2f}, {r.get('status')}"
+             + (f", ref {r['ref']}" if r.get("ref") else "") for r in rows]
+    pending = sum(1 for r in rows if r.get("status") == "pending")
+    head = ("Their only payment" if len(rows) == 1 else f"Their last {len(rows)} payments") \
+        + (f" ({pending} waiting for approval)" if pending else "") + ":"
+    return "\n".join([head, *lines])
+
+
+def _nominations_text(rows: list) -> str:
+    # A nominee replying to our congratulations message lands here, so say what they were nominated for.
+    if not rows:
+        return ""
+    lines = [f"- {r['name']} (nominee id {r['id']}) for {r['category']} at {r['event']} (slug {r['slug']}): "
+             + (f"approved, voting code {r['votingCode']}" + (", voting open" if r["votingOpen"] else ", voting not open yet")
+                if r["approved"] else "waiting for the organisers to approve") for r in rows]
+    return "\n".join(["This number has been nominated (we may have messaged them about it on WhatsApp):", *lines])
+
+
+def _runs_text(rows: list) -> str:
+    if not rows:
+        return ""
+    lines = [f"- {r['event']} (slug {r['slug']}), {r['role']}"
+             + (", voting open" if r.get("votingOpen") else "") + (", nominations open" if r.get("nominationsOpen") else "")
+             for r in rows]
+    return "\n".join(["This number is on the account that runs these events:", *lines])
+
+
+def _complaints_text(rows: list) -> str:
+    if not rows:
+        return ""
+    lines = [f"- #{r['id']} on {str(r.get('createdAt') or '')[:10]}: {r.get('summary')}" for r in rows]
+    return "\n".join(["Complaints they've made recently (the team follows these up):", *lines])
+
+
+async def _payments_context() -> str:
     result = await _api("GET", "/votes/mine", params={"limit": 5})
     if not result.get("success"):
         return "Couldn't load this voter's payments."
     rows = result.get("data") or []
-    if not rows:
-        return "This voter hasn't voted on PrestoVotes from this number before."
-    lines = [f"- {r['createdAt'][:16].replace('T', ' ')} UTC: {r['votes']} votes for {r['nominee']} ({r['event']}), "
-             f"GHS {r['amount']:.2f}, {r['status']}" + (f", ref {r['ref']}" if r.get("ref") else "") for r in rows]
-    pending = sum(1 for r in rows if r["status"] == "pending")
-    head = f"This voter's last {len(rows)} payments" + (f" ({pending} waiting for approval)" if pending else "") + ":"
-    return "\n".join([head, *lines])
+    return _payments_text(rows) or "This voter hasn't voted on PrestoVotes from this number before."
+
+
+async def _nominations_context() -> str:
+    result = await _api("GET", "/nominations/mine")
+    return _nominations_text((result.get("data") or []) if result.get("success") else [])
 
 
 app = require_q_context(mcp.http_app(path="/mcp"))

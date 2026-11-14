@@ -52,6 +52,12 @@ uv run votes_mcp.py
 
 ### `votes_voter_mcp.py`: PrestoVotes voters (WhatsApp via Q)
 
+This server is what the PrestoVotes WhatsApp number runs on. Each turn Q reads `q://context`: who is
+texting (their WhatsApp name and verified number) and what PrestoVotes knows about them, from
+`GET /api/v1/voter/me` (voting history, latest payments, own nominations, events they run, recent
+complaints). An alternative that skips this server, a Q business of type `votes_voter` calling
+`/api/v1/voter` directly, is on the QV2 branch `votes-voter-direct` but isn't in use.
+
 Tools:
 - `find_events`, `get_event` and `find_nominees` look things up.
 - `start_vote` sends a mobile-money prompt, or returns a card checkout link.
