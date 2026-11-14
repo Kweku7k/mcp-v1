@@ -71,8 +71,10 @@ as a picture, so just say it's there. Offer it to nominees when it would help th
 
 Questions about an event (what it is, dates, venue, how winners are chosen, tickets, prizes): call
 get_event and answer from its about and faq in your own short words. If the answer isn't there, say
-you don't know yet and offer to pass the question on with file_complaint. Never make up dates,
-venues, prizes or rules.
+you don't know yet and offer to ask the organisers; if they'd like that, call ask_organisers with the
+event's slug and their question in a clear sentence, and tell them the organisers' answer will come
+to this chat. When the context shows an organiser has answered one of their questions, use that
+answer. Never make up dates, venues, prizes or rules.
 
 Nominee notes: when a nominee (or a voter) tells you something useful about a nominee, save it with
 save_nominee_note for the organisers. A short "I've passed that on" is enough.
@@ -80,12 +82,13 @@ save_nominee_note for the organisers. A short "I've passed that on" is enough.
 Nominating: the event must be open for nominations. Collect the nominee's name, category, phone
 number and a photo (they can send it here; it arrives as "Image Url: ..."), then call nominate.
 
-Complaints, refunds or anything you can't solve: file_complaint with the details and any payment
+Complaints, refunds or problems you can't solve (not questions about an event): file_complaint with the details and any payment
 ref from check_my_votes, and tell them the team will follow up. Don't promise refunds.
 
 Who you're talking to: each turn comes with live context about the person texting: their WhatsApp
 name, their verified number, how long and how much they've voted, their latest payments, anything
-they've been nominated for, events they organise and complaints they've made. Treat them as someone
+they've been nominated for, events they organise, complaints they've made and questions they've
+asked the organisers. Treat them as someone
 you know. Use their first name now and then (it's their WhatsApp name, so drop it if it isn't a
 name). Don't ask for anything the context already answers, and use it to work out what they want:
 a nominee asking about their code, a voter whose payment is still pending, someone following up on
@@ -312,9 +315,28 @@ async def file_complaint(message: str, ref: str | None = None, event: str | None
     return await _api("POST", "/complaints", body={"message": message, "ref": ref, "event": event})
 
 
+@mcp.tool(annotations=WRITE)
+async def ask_organisers(slug: str, question: str) -> dict[str, Any]:
+    """
+    Pass a question about an event to its organisers when get_event's about and faq don't answer it
+    (e.g. the venue, dress code, ticket prices, prize details). They're alerted, and their answer is
+    sent to this person on WhatsApp. Only for questions about the event; problems with payments or
+    votes go to file_complaint.
+
+    Args:
+        slug: the event's slug, from find_events or get_event
+        question: their question as one clear sentence, e.g. "Is there a dress code for the awards night?"
+    """
+    try:
+        name = (_caller().get("name") or "").strip() or None
+    except ContextError:
+        name = None
+    return await _api("POST", "/questions", body={"event": slug, "question": question, "name": name})
+
+
 @mcp.resource("q://context", name="voter_context", mime_type="text/plain",
               description="Who is texting: their WhatsApp name, voting history, latest payments, nominations, "
-                          "events they run and recent complaints, given to the assistant before each turn.")
+                          "events they run, recent complaints and questions to organisers, given to the assistant before each turn.")
 async def voter_context() -> str:
     try:
         user = _caller()
@@ -330,7 +352,7 @@ async def voter_context() -> str:
     me = result.get("data") or {}
     parts = [who, _history_text(me.get("voting")), _payments_text(me.get("recentPayments") or []),
              _nominations_text(me.get("nominations") or []), _runs_text(me.get("runs") or []),
-             _complaints_text(me.get("complaints") or [])]
+             _complaints_text(me.get("complaints") or []), _questions_text(me.get("questions") or [])]
     return "\n\n".join(p for p in parts if p).strip()
 
 
@@ -400,6 +422,22 @@ def _complaints_text(rows: list) -> str:
         return ""
     lines = [f"- #{r['id']} on {str(r.get('createdAt') or '')[:10]}: {r.get('summary')}" for r in rows]
     return "\n".join(["Complaints they've made recently (the team follows these up):", *lines])
+
+
+def _questions_text(rows: list) -> str:
+    if not rows:
+        return ""
+    lines = []
+    for r in rows:
+        line = f"- {str(r.get('askedAt') or '')[:10]}, about {r.get('event')} (slug {r.get('slug')}): \"{r.get('question')}\""
+        if r.get("status") == "answered":
+            line += f" Organisers answered (and we sent it to them on WhatsApp): {r.get('answer')}"
+        elif r.get("status") == "pending":
+            line += " Waiting for the organisers to answer."
+        else:
+            line += " The organisers didn't answer this one."
+        lines.append(line)
+    return "\n".join(["Questions they've asked the organisers:", *lines])
 
 
 async def _payments_context() -> str:
