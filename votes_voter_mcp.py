@@ -61,6 +61,22 @@ those first.
 "Did my vote go through?": use check_my_votes. Paid means counted; pending means waiting for them to
 approve the prompt; failed means nothing was charged, and they can try again.
 
+Voting codes: a nominee's code is *844*138*<nominee id>#, which anyone can dial to vote, and their
+voting link is prestovotes.com/vote/<nominee id>. "What's my code?" from a nominee: it's in the live
+context once they're approved; if they aren't approved yet, say the organisers are still reviewing
+it. For anyone else's code, use find_nominees.
+
+Flyers: when someone asks for their flyer (or a nominee's), call send_flyer; it arrives in this chat
+as a picture, so just say it's there. Offer it to nominees when it would help them campaign.
+
+Questions about an event (what it is, dates, venue, how winners are chosen, tickets, prizes): call
+get_event and answer from its about and faq in your own short words. If the answer isn't there, say
+you don't know yet and offer to pass the question on with file_complaint. Never make up dates,
+venues, prizes or rules.
+
+Nominee notes: when a nominee (or a voter) tells you something useful about a nominee, save it with
+save_nominee_note for the organisers. A short "I've passed that on" is enough.
+
 Nominating: the event must be open for nominations. Collect the nominee's name, category, phone
 number and a photo (they can send it here; it arrives as "Image Url: ..."), then call nominate.
 
@@ -171,7 +187,9 @@ async def find_events(q: str | None = None) -> dict[str, Any]:
 @mcp.tool(annotations=READ)
 async def get_event(slug: str) -> dict[str, Any]:
     """
-    An open event's categories, cost per vote and closing date.
+    An open event's categories, cost per vote and closing date, plus `about` (the organisers' own
+    description of the election: dates, venue, how winners are chosen, tickets...) and `faq`
+    (questions and answers they wrote). Use it for any question about the event.
 
     Args:
         slug: the event's slug from find_events
@@ -182,8 +200,9 @@ async def get_event(slug: str) -> dict[str, Any]:
 @mcp.tool(annotations=READ)
 async def find_nominees(slug: str, q: str | None = None, category: str | None = None, page: int = 1) -> dict[str, Any]:
     """
-    Approved nominees in an event, with their id (needed for start_vote), code and category. Vote
-    counts are included unless the organisers have hidden results (then votes is null; don't guess).
+    Approved nominees in an event, with their id (needed for start_vote and send_flyer), category,
+    votingCode (the USSD code to dial) and votingLink. Vote counts are included unless the organisers
+    have hidden results (then votes is null; don't guess).
 
     Args:
         slug: the event's slug
@@ -247,6 +266,36 @@ async def nominate(slug: str, category: str, name: str, nominee_phone: str, phot
         "slug": slug, "category": category, "name": name, "nominee_phone": nominee_phone, "photo_url": photo_url,
         "description": description, "institution": institution,
         "whatsapp_number": whatsapp_number, "whatsapp_consent": whatsapp_consent is True})
+
+
+@mcp.tool(annotations=WRITE)
+async def send_flyer(nominee_id: int, kind: str | None = None) -> dict[str, Any]:
+    """
+    Draw a nominee's flyer and send it into this chat as a picture, for them to save and share. Works
+    for any approved nominee, and for the texter's own nomination before it's approved. If it comes
+    back with sent=false, give them the flyerUrl link instead. For their own nomination it also returns
+    changePhotoUrl, a page where they can change the photo on their flyer.
+
+    Args:
+        nominee_id: the nominee's id (from find_nominees, or from the live context for their own)
+        kind: "voting" (with their voting code) or "nomination"; leave it out to get the right one
+    """
+    return await _api("POST", "/flyers/send", body={"nominee_id": nominee_id, "kind": kind})
+
+
+@mcp.tool(annotations=WRITE)
+async def save_nominee_note(nominee_id: int, note: str) -> dict[str, Any]:
+    """
+    Save a short note about a nominee for the event's organisers, who see it on the nominee's page:
+    something useful a nominee or voter told you, such as achievements, the name they go by, what they
+    want voters to know, or a mistake in their details. 3-500 characters, in plain words. Never save
+    anything sensitive.
+
+    Args:
+        nominee_id: the nominee's id
+        note: the note
+    """
+    return await _api("POST", f"/nominees/{nominee_id}/notes", body={"note": note})
 
 
 @mcp.tool(annotations=WRITE)
