@@ -18,6 +18,7 @@ Run:
 
 import json
 import os
+import time
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
@@ -30,7 +31,10 @@ from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_headers
 from mcp.types import ToolAnnotations
 
+from mcp_logs import RequestLogging, ToolLogging, log_api_call, mask_phone, setup
+
 load_dotenv()
+log = setup("votes_voter_mcp")
 
 PRESTO_VOTES_URL = os.getenv("PRESTO_VOTES_URL", "https://prestovotes.com").strip().rstrip("/")
 VOTER_API_URL = f"{PRESTO_VOTES_URL}/api/v1/voter"
@@ -126,6 +130,8 @@ def require_q_context(asgi_app):
         try:
             verify_context(token)
         except ContextError as exc:
+            client = (scope.get("client") or ("?",))[0]
+            log.warning(f"rejected {scope.get('method')} {scope.get('path')} from {client}: {exc}")
             body = json.dumps({"error": "unauthorized", "detail": str(exc)}).encode()
             await send({"type": "http.response.start", "status": 401,
                         "headers": [(b"content-type", b"application/json")]})
@@ -151,7 +157,8 @@ async def _api(method: str, path: str, *, params: dict | None = None, body: dict
     headers = {"x-api-key": VOTER_KEY, "Accept": "application/json"}
     try:
         user = _caller()
-    except ContextError:
+    except ContextError as exc:
+        log.warning(f"API {method} {path} not sent: the Q context didn't verify ({exc})")
         return {"success": False, "error": "This conversation couldn't be verified."}
     phone = user.get("phone") if user.get("phone_verified") else None
     if phone:
@@ -162,15 +169,21 @@ async def _api(method: str, path: str, *, params: dict | None = None, body: dict
         if name:
             headers["X-Voter-Name"] = quote(name)
     clean = {k: v for k, v in (params or {}).items() if v not in (None, "")}
+    started = time.perf_counter()
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
             response = await client.request(method, f"{VOTER_API_URL}{path}", params=clean, json=body, headers=headers)
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        log_api_call(log, method, path, started, None, f"{exc.__class__.__name__}: {exc}")
         return {"success": False, "error": "PrestoVotes isn't reachable right now. Please try again shortly."}
     try:
         payload = response.json()
     except ValueError:
         payload = {}
+    error = payload.get("error") if response.status_code >= 400 else None
+    if response.status_code >= 400 and not error:
+        error = response.text[:300]
+    log_api_call(log, method, path, started, response.status_code, error)
     if response.status_code >= 400:
         return {"success": False, "error": payload.get("error") or f"Something went wrong (HTTP {response.status_code})."}
     result = {"success": True, "data": payload.get("data")}
@@ -180,6 +193,20 @@ async def _api(method: str, path: str, *, params: dict | None = None, body: dict
 
 
 mcp = FastMCP("PrestoVotes", instructions=INSTRUCTIONS)
+
+
+def _who() -> str:
+    """The texter, for the logs: masked number, or why there isn't one."""
+    try:
+        user = _caller()
+    except ContextError:
+        return "unverified context"
+    if not user.get("phone"):
+        return "no phone"
+    return mask_phone(user["phone"]) + ("" if user.get("phone_verified") else " (unverified)")
+
+
+mcp.add_middleware(ToolLogging(log, who=_who))
 
 
 @mcp.tool(annotations=READ)
@@ -460,7 +487,11 @@ async def _nominations_context() -> str:
     return _nominations_text((result.get("data") or []) if result.get("success") else [])
 
 
-app = require_q_context(mcp.http_app(path="/mcp"))
+# RequestLogging is outermost, so requests require_q_context turns away are logged too.
+app = RequestLogging(require_q_context(mcp.http_app(path="/mcp")), log.getChild("http"))
 
 if __name__ == "__main__":
-    uvicorn.run(app, host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8012")))
+    # log_config=None keeps uvicorn's logs in our log files (mcp_logs.setup); RequestLogging
+    # replaces its access log.
+    uvicorn.run(app, host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8012")),
+                log_config=None, access_log=False)

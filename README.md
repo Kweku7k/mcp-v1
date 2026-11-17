@@ -138,6 +138,7 @@ server {
         proxy_pass http://127.0.0.1:8012;
         proxy_set_header Host 127.0.0.1:8012;   # MCP's DNS-rebinding check expects a local Host
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;   # real client IPs in the logs
         proxy_http_version 1.1;
         proxy_buffering off;                    # streamable HTTP
         proxy_read_timeout 300s;
@@ -146,6 +147,51 @@ server {
 ```
 
 Then run `sudo certbot --nginx -d voters.mcp.prestovotes.com`.
+
+## Logs
+
+`votes_mcp.py`, `votes_voter_mcp.py` and `stay_mcp.py` log through `mcp_logs.py`, to the console
+(so `journalctl -u votes-voter-mcp -f` works) and to files in `logs/`:
+
+| File | What's in it |
+|---|---|
+| `logs/<server>.log` | everything: each tool call and resource read (who, arguments, time taken, ok or failed), each call to the product API (path, status, time), each HTTP request, startup |
+| `logs/<server>.errors.log` | warnings and errors only: failed tools, API errors and outages, rejected tokens or `X-Q-Context`, crashes with tracebacks |
+
+Every HTTP request is logged with its reply, paired by a request number:
+
+```
+→ #5 POST /mcp from 41.66.10.20 [q 2.0 / python-httpx/0.28.1] auth=q-context session=53e5d8f0
+      tools/call find_events {"method": "tools/call", "params": {"name": "find_events", "arguments": {"q": "music"}}, ...}
+← #5 200 in 15ms result #2 {"result": {"structuredContent": {"success": true, "data": [...]}}}
+```
+
+"from" is the client IP (nginx must send `X-Forwarded-For`, see above), then the MCP client's name
+and version from its `initialize` (remembered for the session) and the User-Agent. `auth` says how
+it signed in, never the token itself. To keep lines readable, `tools/list` replies show only the
+tool names, and tool results only their structured content. Requests the auth layer turns away
+are logged too, though without a body, since they're refused before it's read.
+
+```bash
+tail -f logs/votes_voter_mcp.log           # watch it live
+grep "#5 " logs/votes_voter_mcp.log        # one request and its reply
+tail -f logs/votes_voter_mcp.errors.log    # just the problems
+grep "tool start_vote" logs/votes_voter_mcp.log
+```
+
+A tool "failed" when it returned `{"success": false}`, often for an expected reason (voting closed,
+a bad slug); those are warnings. API 5xx, timeouts and unreachable APIs are errors.
+
+Phone numbers are masked (`233*****0123`), tokens show only their first 12 characters, and long
+arguments are cut short. Files rotate at 10 MB, keeping 5 old ones.
+
+| Env | Default |
+|---|---|
+| `LOG_DIR` | `logs/` next to the code |
+| `LOG_LEVEL` | `INFO`; `DEBUG` also logs each tool's result |
+| `LOG_MAX_MB`, `LOG_BACKUPS` | `10`, `5` |
+| `LOG_BODY_CHARS` | `4000`: request and reply bodies are cut after this |
+| `LOG_MASK_PHONES` | `1`; `0` logs phone numbers (and other 10-13 digit numbers) in full |
 
 ## Adding a server
 

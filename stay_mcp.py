@@ -6,8 +6,11 @@ from dotenv import load_dotenv
 from fastmcp import FastMCP
 import uvicorn
 
+from mcp_logs import RequestLogging, ToolLogging, setup
+
 
 load_dotenv()
+log = setup("stay_mcp")
 
 
 def _extract_bearer_token(scope: dict[str, Any]) -> str | None:
@@ -411,6 +414,7 @@ class StayClient:
 
 
 mcp = FastMCP("Presto Stay MCP")
+mcp.add_middleware(ToolLogging(log))
 stay_client = StayClient()
 
 
@@ -561,4 +565,6 @@ async def unassign_room(user_id: int) -> dict[str, Any]:
 		}
 
 if __name__ == "__main__":
-    mcp.run(transport="http", port=8010)
+    # Every request and reply logged (mcp_logs.RequestLogging), in place of uvicorn's access log.
+    uvicorn.run(RequestLogging(mcp.http_app(), log.getChild("http")), host="127.0.0.1", port=8010,
+                log_config=None, access_log=False)

@@ -22,13 +22,17 @@ import time
 from typing import Any
 
 import httpx
+import uvicorn
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 from fastmcp.server.auth import AccessToken, RemoteAuthProvider, TokenVerifier
 from fastmcp.server.dependencies import get_access_token
 from mcp.types import ToolAnnotations
 
+from mcp_logs import RequestLogging, ToolLogging, log_api_call, setup
+
 load_dotenv()
+log = setup("votes_mcp")
 
 SERVER_NAME = "PrestoVotes"
 PRESTO_VOTES_URL = os.getenv("PRESTO_VOTES_URL", "https://prestovotes.com").strip().rstrip("/")
@@ -64,6 +68,7 @@ class VotesClient:
     async def get(self, token: str, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         clean = {k: (str(v).lower() if isinstance(v, bool) else v) for k, v in (params or {}).items() if v is not None}
 
+        started = time.perf_counter()
         try:
             async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
                 response = await client.get(
@@ -72,14 +77,18 @@ class VotesClient:
                     headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
                 )
         except httpx.TimeoutException as exc:
+            log_api_call(log, "GET", path, started, None, "timed out")
             raise VotesAPIError("The PrestoVotes API request timed out.") from exc
         except httpx.RequestError as exc:
+            log_api_call(log, "GET", path, started, None, f"{exc.__class__.__name__}: {exc}")
             raise VotesAPIError(f"Could not connect to the PrestoVotes API: {exc}") from exc
 
         try:
             body = response.json()
         except ValueError:
             body = {"error": response.text[:500]}
+        log_api_call(log, "GET", path, started, response.status_code,
+                     body.get("error") if response.status_code >= 400 else None)
 
         if response.status_code in (401, 403):
             raise VotesAPIError(body.get("error") or f"Not authorised (HTTP {response.status_code}).")
@@ -104,9 +113,12 @@ class PrestoVotesTokenVerifier(TokenVerifier):
             return cached[1]
         try:
             me = (await self.client.get(token, "/me")).get("data") or {}
-        except VotesAPIError:
+        except VotesAPIError as exc:
             self._cache.pop(token, None)
+            log.warning(f"token {token[:12]}... rejected: {exc}")
             return None
+        log.info(f"token {token[:12]}... verified: {me.get('scope')} "
+                 f"{(me.get('award') or {}).get('slug') or ''} ({me.get('label') or 'no label'})".rstrip())
         award = (me.get("award") or {}).get("slug")
         access = AccessToken(token=token, client_id=me.get("label") or "prestovotes", scopes=["votes:read"],
                              claims={"scope": me.get("scope"), "award": award})
@@ -139,6 +151,18 @@ auth = RemoteAuthProvider(
     resource_name="PrestoVotes",
 )
 mcp = FastMCP(SERVER_NAME, instructions=INSTRUCTIONS, auth=auth)
+
+
+def _who() -> str:
+    """The connection, for the logs: staff, or the organiser's event."""
+    access = get_access_token()
+    if access is None:
+        return "no token"
+    claims = access.claims or {}
+    return f"{claims.get('scope') or '?'} {claims.get('award') or ''} ({access.client_id})".replace("  ", " ")
+
+
+mcp.add_middleware(ToolLogging(log, who=_who))
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -310,5 +334,11 @@ async def list_organisers(q: str | None = None, page: int = 1, page_size: int = 
     return await _call("/organisers", {"q": q, "page": page, "pageSize": page_size})
 
 
+# RequestLogging is outermost, so requests the auth layer turns away (401s) are logged too.
+app = RequestLogging(mcp.http_app(), log.getChild("http"))
+
 if __name__ == "__main__":
-    mcp.run(transport="http", host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8011")))
+    # log_config=None keeps uvicorn's logs in our log files (mcp_logs.setup); RequestLogging
+    # replaces its access log.
+    uvicorn.run(app, host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8011")),
+                log_config=None, access_log=False)
