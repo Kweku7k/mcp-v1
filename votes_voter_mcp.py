@@ -20,6 +20,7 @@ import json
 import os
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import jwt
@@ -149,11 +150,17 @@ def _voter_phone() -> str | None:
 async def _api(method: str, path: str, *, params: dict | None = None, body: dict | None = None) -> dict[str, Any]:
     headers = {"x-api-key": VOTER_KEY, "Accept": "application/json"}
     try:
-        phone = _voter_phone()
+        user = _caller()
     except ContextError:
         return {"success": False, "error": "This conversation couldn't be verified."}
+    phone = user.get("phone") if user.get("phone_verified") else None
     if phone:
         headers["X-Voter-Phone"] = phone
+        # Their WhatsApp name, so organisers see who a chat is with; percent-encoded, since
+        # headers can't carry emoji or other non-latin characters.
+        name = " ".join(str(user.get("name") or "").split())[:120]
+        if name:
+            headers["X-Voter-Name"] = quote(name)
     clean = {k: v for k, v in (params or {}).items() if v not in (None, "")}
     try:
         async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
