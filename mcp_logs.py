@@ -2,16 +2,11 @@
 every error.
 
 Call setup("<server>") once at startup, before the server runs, and add ToolLogging to the FastMCP
-app. Each server then writes to:
+app. Everything (tool calls, resource reads, API calls, HTTP requests and replies, errors with
+tracebacks) goes to the console (stdout); nothing is written to files here. Where it ends up
+(journald, a log file, a log service) is the server's job.
 
-    logs/<server>.log          everything: tool calls, resource reads, API calls, HTTP requests
-    logs/<server>.errors.log   warnings and errors only, with tracebacks
-
-plus the console (stdout), so journalctl / pm2 / docker logs still show it. Files rotate at
-LOG_MAX_MB (default 10 MB), keeping LOG_BACKUPS (default 5) old files each.
-
-Settings: LOG_DIR (default ./logs next to this file), LOG_LEVEL (default INFO; DEBUG also logs
-tool results).
+Settings: LOG_LEVEL (default INFO; DEBUG also logs tool results).
 
 Phone numbers are masked (233****0000) and tokens never logged; long text arguments are cut short.
 """
@@ -22,7 +17,6 @@ import os
 import re
 import sys
 import time
-from logging.handlers import RotatingFileHandler
 from typing import Any, Callable
 
 from fastmcp.server.middleware import Middleware, MiddlewareContext
@@ -37,7 +31,7 @@ _configured = False
 
 
 def setup(server: str) -> logging.Logger:
-    """Sends the root, fastmcp and uvicorn loggers to the console and to logs/<server>*.log."""
+    """Sends the root and uvicorn loggers to the console (stdout), in one format."""
     global _configured
     log = logging.getLogger(server)
     if _configured:
@@ -45,32 +39,14 @@ def setup(server: str) -> logging.Logger:
     _configured = True
 
     level = getattr(logging, os.getenv("LOG_LEVEL", "INFO").strip().upper(), logging.INFO)
-    log_dir = os.getenv("LOG_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-    os.makedirs(log_dir, exist_ok=True)
-    max_bytes = int(float(os.getenv("LOG_MAX_MB", "10")) * 1024 * 1024)
-    backups = int(os.getenv("LOG_BACKUPS", "5"))
-    formatter = logging.Formatter(FORMAT)
-
-    everything = RotatingFileHandler(os.path.join(log_dir, f"{server}.log"), maxBytes=max_bytes,
-                                     backupCount=backups, encoding="utf-8")
-    errors = RotatingFileHandler(os.path.join(log_dir, f"{server}.errors.log"), maxBytes=max_bytes,
-                                 backupCount=backups, encoding="utf-8")
-    errors.setLevel(logging.WARNING)
     console = logging.StreamHandler(sys.stdout)
-    for handler in (everything, errors, console):
-        handler.setFormatter(formatter)
+    console.setFormatter(logging.Formatter(FORMAT))
 
     root = logging.getLogger()
     root.setLevel(level)
     for handler in root.handlers[:]:
         root.removeHandler(handler)
-    for handler in (everything, errors, console):
-        root.addHandler(handler)
-
-    # FastMCP logs to its own console handler and doesn't propagate: give it the files too.
-    fastmcp_log = logging.getLogger("fastmcp")
-    fastmcp_log.addHandler(everything)
-    fastmcp_log.addHandler(errors)
+    root.addHandler(console)
 
     # Uvicorn: let its loggers flow up to root (run it with log_config=None so it doesn't replace them).
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
@@ -83,7 +59,7 @@ def setup(server: str) -> logging.Logger:
         logging.getLogger(name).setLevel(logging.WARNING)
 
     sys.excepthook = lambda *exc: log.critical("unhandled exception", exc_info=exc)
-    log.info(f"logging to {log_dir}/{server}.log (level {logging.getLevelName(level)})")
+    log.info(f"logging to the console (level {logging.getLevelName(level)})")
     return log
 
 
@@ -199,7 +175,7 @@ def _rpc_summary(message: Any) -> str:
         target = params.get("name") or params.get("uri") or ""
         return f"{method} {target}".strip()
     if "error" in message:
-        return f"error #{message.get('id')}"
+        return f"error #{message['id']}" if message.get("id") is not None else "error"
     return f"result #{message.get('id')}" if "id" in message else ""
 
 

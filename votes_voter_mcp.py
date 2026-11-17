@@ -491,7 +491,7 @@ async def _nominations_context() -> str:
 app = RequestLogging(require_q_context(mcp.http_app(path="/mcp")), log.getChild("http"))
 
 if __name__ == "__main__":
-    # log_config=None keeps uvicorn's logs in our log files (mcp_logs.setup); RequestLogging
+    # log_config=None keeps uvicorn's logs in our console format (mcp_logs.setup); RequestLogging
     # replaces its access log.
     uvicorn.run(app, host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8012")),
                 log_config=None, access_log=False)

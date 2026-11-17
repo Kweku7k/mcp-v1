@@ -9,5 +9,3 @@ wheels/
 # Virtual environments
 .venv
 
-# Server logs (mcp_logs.py)
-logs/

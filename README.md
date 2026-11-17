@@ -151,12 +151,13 @@ Then run `sudo certbot --nginx -d voters.mcp.prestovotes.com`.
 ## Logs
 
 `votes_mcp.py`, `votes_voter_mcp.py` and `stay_mcp.py` log through `mcp_logs.py`, to the console
-(so `journalctl -u votes-voter-mcp -f` works) and to files in `logs/`:
+(stdout) only: no log files are written in the repo. Where the output ends up is set on the
+server. Under systemd it's in the journal (`journalctl -u votes-voter-mcp -f`).
 
-| File | What's in it |
-|---|---|
-| `logs/<server>.log` | everything: each tool call and resource read (who, arguments, time taken, ok or failed), each call to the product API (path, status, time), each HTTP request, startup |
-| `logs/<server>.errors.log` | warnings and errors only: failed tools, API errors and outages, rejected tokens or `X-Q-Context`, crashes with tracebacks |
+What's logged: each HTTP request and its reply; each tool call and resource read (who, arguments,
+time taken, ok or failed); each call to the product API (path, status, time); and warnings and
+errors (failed tools, API errors and outages, rejected tokens or `X-Q-Context`, crashes with
+tracebacks).
 
 Every HTTP request is logged with its reply, paired by a request number:
 
@@ -173,23 +174,20 @@ tool names, and tool results only their structured content. Requests the auth la
 are logged too, though without a body, since they're refused before it's read.
 
 ```bash
-tail -f logs/votes_voter_mcp.log           # watch it live
-grep "#5 " logs/votes_voter_mcp.log        # one request and its reply
-tail -f logs/votes_voter_mcp.errors.log    # just the problems
-grep "tool start_vote" logs/votes_voter_mcp.log
+journalctl -u votes-voter-mcp -f                          # watch it live
+journalctl -u votes-voter-mcp | grep "#5 "                # one request and its reply
+journalctl -u votes-voter-mcp | grep -E "WARNING|ERROR"   # just the problems
 ```
 
 A tool "failed" when it returned `{"success": false}`, often for an expected reason (voting closed,
 a bad slug); those are warnings. API 5xx, timeouts and unreachable APIs are errors.
 
 Phone numbers are masked (`233*****0123`), tokens show only their first 12 characters, and long
-arguments are cut short. Files rotate at 10 MB, keeping 5 old ones.
+arguments are cut short.
 
 | Env | Default |
 |---|---|
-| `LOG_DIR` | `logs/` next to the code |
 | `LOG_LEVEL` | `INFO`; `DEBUG` also logs each tool's result |
-| `LOG_MAX_MB`, `LOG_BACKUPS` | `10`, `5` |
 | `LOG_BODY_CHARS` | `4000`: request and reply bodies are cut after this |
 | `LOG_MASK_PHONES` | `1`; `0` logs phone numbers (and other 10-13 digit numbers) in full |
 
