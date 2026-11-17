@@ -55,15 +55,20 @@ uv run votes_mcp.py
 This server is what the PrestoVotes WhatsApp number runs on. Each turn Q reads `q://context`: who is
 texting (their WhatsApp name and verified number) and what PrestoVotes knows about them, from
 `GET /api/v1/voter/me` (voting history, latest payments, own nominations, events they run, recent
-complaints). An alternative that skips this server, a Q business of type `votes_voter` calling
-`/api/v1/voter` directly, is on the QV2 branch `votes-voter-direct` but isn't in use.
+complaints and questions, events they've been chatting about, and notes remembered from earlier
+chats). The instructions have the assistant greet a known voter by name on its first reply and bring
+up the one most useful thing (a pending payment, an approved nomination, an organiser's answer). An
+alternative that skips this server, a Q business of type `votes_voter` calling `/api/v1/voter`
+directly, is on the QV2 branch `votes-voter-direct` but isn't in use.
 
 Tools:
 - `find_events`, `get_event` and `find_nominees` look things up.
 - `start_vote` sends a mobile-money prompt, or returns a card checkout link.
-- `check_my_votes`, `nominate` and `file_complaint` act for the voter.
-
-There is also a `q://context` resource with the voter's pending payments.
+- `check_my_votes`, `nominate`, `send_flyer`, `save_nominee_note`, `file_complaint` and
+  `ask_organisers` act for the voter.
+- `remember_voter_note` and `forget_voter_note` keep short notes about the person texting (at most
+  15, like Stay's tenant notes). They come back in `q://context` as `[id] note`. Presto staff see them
+  on PrestoVotes `/admin/chats/<phone>`; organisers don't.
 
 Every request must carry `X-Q-Context`, a short-lived ES256 JWT that Q signs with the sender's
 verified WhatsApp number. The server checks it against Q's JWKS, along with `aud`, `iss` and

@@ -92,14 +92,29 @@ ref from check_my_votes, and tell them the team will follow up. Don't promise re
 
 Who you're talking to: each turn comes with live context about the person texting: their WhatsApp
 name, their verified number, how long and how much they've voted, their latest payments, anything
-they've been nominated for, events they organise, complaints they've made and questions they've
-asked the organisers. Treat them as someone
-you know. Use their first name now and then (it's their WhatsApp name, so drop it if it isn't a
-name). Don't ask for anything the context already answers, and use it to work out what they want:
-a nominee asking about their code, a voter whose payment is still pending, someone following up on
-a complaint. Don't recite their history back unprompted, and never share one person's details with
-anyone else. Organisers get no special powers here; for changes to their event, point them to their
-dashboard on prestovotes.com.
+they've been nominated for, events they organise, complaints they've made, questions they've asked
+the organisers, the events they've been chatting about, and notes you saved in earlier chats. Treat
+them as someone you know. Use their first name now and then (it's their WhatsApp name, so drop it if
+it isn't a name; if a note says what they like to be called, use that). Don't ask for anything the
+context already answers, and use it to work out what they want: a nominee asking about their code, a
+voter whose payment is still pending, someone following up on a complaint. Don't recite their history
+back unprompted, and never share one person's details with anyone else. Organisers get no special
+powers here; for changes to their event, point them to their dashboard on prestovotes.com.
+
+Starting the conversation: if you haven't replied to them yet in this chat, open with their first
+name, then, in one short line, the single most useful thing the context shows, if there is one: a
+payment still waiting for them to approve, their nomination approved (with its voting code), an
+organiser's answer to their question, or a complaint the team is following up. Then answer what they
+asked. If they're new to PrestoVotes, welcome them in one line instead and say what you can help with
+(voting, checking votes, nominating, flyers, questions about an event). Greet them like this once per
+chat, not on every reply.
+
+Remembering: when they tell you something worth knowing next time, save it with remember_voter_note:
+what they like to be called, the language they prefer, who they're backing at an event, or an ongoing
+situation ("travelling until 3 Dec"). Keep each note short and self-contained. Don't save what
+PrestoVotes already tracks (payments, votes, nominations), or codes, PINs or sensitive personal
+details. If a note is wrong or out of date, or they ask you to forget it, call forget_voter_note with
+its [id] from the context. Don't announce that you're saving a note.
 """.strip()
 
 _jwks = jwt.PyJWKClient(Q_JWKS_URL, cache_keys=True, lifespan=3600)
@@ -336,6 +351,34 @@ async def save_nominee_note(nominee_id: int, note: str) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=WRITE)
+async def remember_voter_note(note: str) -> dict[str, Any]:
+    """
+    Save one short note about the person texting, to remember in future chats: what they like to be
+    called ("prefers to be called Kofi"), the language they prefer, who they're backing ("supporting
+    Sarkodie at the music awards"), or an ongoing situation ("travelling until 3 Dec"). Notes come
+    back in the context with their [id]. Don't save what PrestoVotes already tracks (payments, votes,
+    nominations), codes or PINs, or sensitive personal details. Only the assistant and Presto staff
+    see these; organisers don't.
+
+    Args:
+        note: the note, 3-300 characters, written so it makes sense on its own later
+    """
+    return await _api("POST", "/notes", body={"note": note})
+
+
+@mcp.tool(annotations=WRITE)
+async def forget_voter_note(note_id: int) -> dict[str, Any]:
+    """
+    Delete a note about the person texting that is wrong or no longer true, or that they ask you to
+    forget. Notes in the context show their id in brackets, e.g. [12].
+
+    Args:
+        note_id: the note's id from the context
+    """
+    return await _api("DELETE", f"/notes/{note_id}")
+
+
+@mcp.tool(annotations=WRITE)
 async def file_complaint(message: str, ref: str | None = None, event: str | None = None) -> dict[str, Any]:
     """
     Log a complaint or request for the PrestoVotes team (e.g. paid but votes didn't count, refund,
@@ -370,7 +413,8 @@ async def ask_organisers(slug: str, question: str) -> dict[str, Any]:
 
 @mcp.resource("q://context", name="voter_context", mime_type="text/plain",
               description="Who is texting: their WhatsApp name, voting history, latest payments, nominations, "
-                          "events they run, recent complaints and questions to organisers, given to the assistant before each turn.")
+                          "events they run, recent complaints and questions to organisers, events they've been "
+                          "chatting about and notes remembered from earlier chats, given to the assistant before each turn.")
 async def voter_context() -> str:
     try:
         user = _caller()
@@ -386,7 +430,8 @@ async def voter_context() -> str:
     me = result.get("data") or {}
     parts = [who, _history_text(me.get("voting")), _payments_text(me.get("recentPayments") or []),
              _nominations_text(me.get("nominations") or []), _runs_text(me.get("runs") or []),
-             _complaints_text(me.get("complaints") or []), _questions_text(me.get("questions") or [])]
+             _complaints_text(me.get("complaints") or []), _questions_text(me.get("questions") or []),
+             _recent_events_text(me.get("recentEvents") or []), _notes_text(me.get("notes") or [])]
     return "\n\n".join(p for p in parts if p).strip()
 
 
@@ -472,6 +517,37 @@ def _questions_text(rows: list) -> str:
             line += " The organisers didn't answer this one."
         lines.append(line)
     return "\n".join(["Questions they've asked the organisers:", *lines])
+
+
+ACTIONS = {"viewed_event": "asked about it", "viewed_nominees": "looked at nominees", "vote": "voted",
+           "nomination": "nominated someone", "flyer": "got a flyer", "note": "left a nominee note",
+           "complaint": "complained", "question": "asked the organisers"}
+
+
+def _ago(iso: str | None) -> str:
+    try:
+        days = (datetime.utcnow() - datetime.fromisoformat(iso)).days if iso else None
+    except ValueError:
+        days = None
+    if days is None:
+        return ""
+    return "today" if days < 1 else "yesterday" if days < 2 else f"{days} days ago"
+
+
+def _recent_events_text(rows: list) -> str:
+    if not rows:
+        return ""
+    parts = []
+    for r in rows:
+        bits = [b for b in (ACTIONS.get(r.get("lastAction") or "", ""), _ago(r.get("lastSeen"))) if b]
+        parts.append(f"{r.get('event')} (slug {r.get('slug')})" + (f": {', '.join(bits)}" if bits else ""))
+    return "Events they've been chatting with us about, latest first: " + "; ".join(parts) + "."
+
+
+def _notes_text(rows: list) -> str:
+    if not rows:
+        return ""
+    return "Notes remembered from earlier chats: " + "; ".join(f"[{r['id']}] {r['note']}" for r in rows)
 
 
 async def _payments_context() -> str:
