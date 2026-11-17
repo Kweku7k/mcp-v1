@@ -103,6 +103,18 @@ def _failure(result: Any) -> str | None:
     return None
 
 
+MODEL_HEADER = "x-q-model"   # set by Q (QV2 q/ai/mcp_bridge.py): the model answering this turn
+
+
+def _model_header() -> str:
+    """The model Q says is answering, from the current request's X-Q-Model header, or ""."""
+    try:
+        from fastmcp.server.dependencies import get_http_headers
+        return (get_http_headers(include={MODEL_HEADER}).get(MODEL_HEADER) or "").strip()[:80]
+    except Exception:
+        return ""
+
+
 class ToolLogging(Middleware):
     """Logs every tool call and resource read: who, what, how long, and how it went.
 
@@ -114,12 +126,14 @@ class ToolLogging(Middleware):
         self.who = who
 
     def _caller(self) -> str:
+        model = _model_header()
+        model = f" [{model}]" if model else ""
         if self.who is None:
-            return ""
+            return model
         try:
-            return f" by {self.who()}"
+            return f" by {self.who()}{model}"
         except Exception as exc:  # never let logging break a request
-            return f" by ? ({exc.__class__.__name__})"
+            return f" by ? ({exc.__class__.__name__}){model}"
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):
         name = context.message.name
@@ -294,6 +308,8 @@ class RequestLogging:
             summary, body = _describe(messages)
             line = f"→ {rid} {scope.get('method')} {path} from {ip}" + (f" [{who}]" if who else "")
             line += self._auth(headers) + (f" session={session[:8]}" if session else "")
+            if headers.get(MODEL_HEADER):
+                line += f" model={headers[MODEL_HEADER][:80]}"
             if summary or body:
                 line += f"\n      {summary} {body}".rstrip()
             self.log.info(line)

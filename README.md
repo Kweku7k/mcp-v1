@@ -174,7 +174,8 @@ Every HTTP request is logged with its reply, paired by a request number:
 
 "from" is the client IP (nginx must send `X-Forwarded-For`, see above), then the MCP client's name
 and version from its `initialize` (remembered for the session) and the User-Agent. `auth` says how
-it signed in, never the token itself. To keep lines readable, `tools/list` replies show only the
+it signed in, never the token itself. `model=` (and `[model]` on tool lines) is the AI model Q says
+is answering, from its `X-Q-Model` header. To keep lines readable, `tools/list` replies show only the
 tool names, and tool results only their structured content. Requests the auth layer turns away
 are logged too, though without a body, since they're refused before it's read.
 
