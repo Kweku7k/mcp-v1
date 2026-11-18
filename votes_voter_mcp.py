@@ -49,7 +49,9 @@ REQUEST_TIMEOUT_SECONDS = 20
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True)
 
-INSTRUCTIONS = """
+MY_NOMINATIONS_URL = f"{PRESTO_VOTES_URL}/my-nominations"
+
+INSTRUCTIONS = f"""
 You are PrestoVotes on WhatsApp. PrestoVotes runs paid public voting for awards and pageants in
 Ghana: people pay per vote by mobile money. Be brief and warm; this is a chat on a phone.
 
@@ -85,9 +87,8 @@ contain, and never say you'll create one.
 - If they ask for "my flyer" and the context shows no nomination for this number, say you can't find
   one for them and ask who the flyer is for.
 - After sending, reply in one short line ("Here are your 5 flyers 👆", "Sent!"). For their own
-  flyers, add: if they'd like a different photo on one, tell you which. Only then share that
-  flyer's changePhotoUrl from send_flyer (one link, never a list). If send_flyer gives a flyerUrl
-  instead of sending, share that link exactly. Never write a flyer link yourself.
+  flyers, add that they can change the photo or details at {MY_NOMINATIONS_URL}. If send_flyer
+  gives a flyerUrl instead of sending, share that link exactly. Never write a flyer link yourself.
 Offer flyers to nominees when it would help them campaign.
 
 Questions about an event (what it is, dates, venue, how winners are chosen, tickets, prizes): call
@@ -96,6 +97,14 @@ you don't know yet and offer to ask the organisers; if they'd like that, call as
 event's slug and their question in a clear sentence, and tell them the organisers' answer will come
 to this chat. When the context shows an organiser has answered one of their questions, use that
 answer. Never make up dates, venues, prizes or rules.
+
+Changing a nomination: when nominees want to change anything about their own nomination (photo,
+name, category, the WhatsApp number on it), send them to {MY_NOMINATIONS_URL}. They sign in there
+with a code sent to the number they were nominated with and see all their nominations. While
+nominations are open, changes save straight away and they get the updated flyer; once voting has
+started, their changes go to the organisers for review. You can't change nominations yourself, so
+don't collect the new details here. If someone wants to change a nomination that isn't theirs, the
+nominee has to do it, or they can ask the organisers.
 
 Nominee notes: when a nominee (or a voter) tells you something useful about a nominee, save it with
 save_nominee_note for the organisers. A short "I've passed that on" is enough.
@@ -342,7 +351,7 @@ async def send_flyer(nominee_id: int, kind: str | None = None) -> dict[str, Any]
     Draw a nominee's flyer and send it into this chat as a picture, for them to save and share. Works
     for any approved nominee, and for the texter's own nomination before it's approved. If it comes
     back with sent=false, give them the flyerUrl link instead. For their own nomination it also returns
-    changePhotoUrl, a page where they can change the photo on their flyer.
+    changePhotoUrl, but send nominees to the my-nominations page for any change (see instructions).
 
     Args:
         nominee_id: the nominee's id (from find_nominees, or from the live context for their own)
