@@ -20,6 +20,7 @@ Run:
 import os
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 import uvicorn
@@ -54,6 +55,11 @@ Start with whoami to see the connection's scope. Presto staff ("platform") can u
 organiser ("award") can only read their own event, so pass that event's slug, and
 get_platform_overview, search_transactions and list_organisers will refuse them. Voter phone
 numbers are masked for organisers. Nothing here can change data.
+
+Presto staff can also see what the PrestoVotes WhatsApp assistant (which answers voters on Q) has
+been doing: for "brief me" call assistant_brief and summarise it in plain language; for "what needs
+me" or "my inbox" call assistant_inbox; to read conversations use list_assistant_chats and
+get_assistant_chat. Times are UTC, which is Ghana time.
 """.strip()
 
 
@@ -65,12 +71,13 @@ class VotesClient:
     def __init__(self, base_url: str) -> None:
         self.base_url = base_url
 
-    async def get(self, token: str, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def get(self, token: str, path: str, params: dict[str, Any] | None = None,
+                  timeout: float = REQUEST_TIMEOUT_SECONDS) -> dict[str, Any]:
         clean = {k: (str(v).lower() if isinstance(v, bool) else v) for k, v in (params or {}).items() if v is not None}
 
         started = time.perf_counter()
         try:
-            async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT_SECONDS) as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.get(
                     f"{self.base_url}{path}",
                     params=clean,
@@ -128,12 +135,13 @@ class PrestoVotesTokenVerifier(TokenVerifier):
         return access
 
 
-async def _call(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+async def _call(path: str, params: dict[str, Any] | None = None,
+                timeout: float = REQUEST_TIMEOUT_SECONDS) -> dict[str, Any]:
     access = get_access_token()
     if access is None:
         return {"success": False, "error": "Not signed in to PrestoVotes. Reconnect the connector."}
     try:
-        body = await votes_client.get(access.token, path, params)
+        body = await votes_client.get(access.token, path, params, timeout=timeout)
     except VotesAPIError as exc:
         return {"success": False, "error": str(exc)}
     result = {"success": True, "data": body.get("data")}
@@ -332,6 +340,61 @@ async def list_organisers(q: str | None = None, page: int = 1, page_size: int = 
         page_size: 1-200
     """
     return await _call("/organisers", {"q": q, "page": page, "pageSize": page_size})
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def assistant_brief(hours: int = 24) -> dict[str, Any]:
+    """
+    Staff only. What the PrestoVotes WhatsApp assistant has been doing in the last `hours` hours:
+    how many chats were active and about which events, what it did for people (votes, nominations,
+    flyers, questions to organisers), complaints filed, the state of questions passed to organisers
+    (asked, answered, still pending, answers that didn't reach the voter), and the latest message
+    and reply in the most recent chats. Summarise it in plain language and point out anything that
+    needs a person.
+
+    Args:
+        hours: how far back to look, 1-744 (default 24)
+    """
+    return await _call("/assistant/brief", {"hours": hours}, timeout=90)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def assistant_inbox() -> dict[str, Any]:
+    """
+    Staff only. What's waiting on a person from the WhatsApp assistant: voter questions organisers
+    haven't answered yet (oldest first, with hours waiting), answers that didn't reach the voter on
+    WhatsApp, and WhatsApp complaints from the last 7 days. Each item has the voter's phone; use
+    get_assistant_chat to read the conversation and search_transactions to check a payment.
+    """
+    return await _call("/assistant/inbox")
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def list_assistant_chats(page: int = 1, event: str | None = None) -> dict[str, Any]:
+    """
+    Staff only. WhatsApp chats with the PrestoVotes assistant, most recent first (30 a page), each
+    with the voter's phone and name, when it was last active, the events it dealt with and the last
+    thing the assistant did. Pass an event slug for only the chats about that event.
+
+    Args:
+        page: page number, from 1
+        event: event slug, from list_events
+    """
+    return await _call("/assistant/chats", {"page": page, "event": event}, timeout=60)
+
+
+@mcp.tool(annotations=READ_ONLY)
+async def get_assistant_chat(phone: str, limit: int = 60) -> dict[str, Any]:
+    """
+    Staff only. One WhatsApp conversation with the PrestoVotes assistant: its latest messages
+    (oldest first, "user" is the voter), the events it dealt with, and the notes the assistant keeps
+    about the person.
+
+    Args:
+        phone: the voter's number, e.g. 233244123456 or 0244123456
+        limit: how many of the latest messages, 1-500 (default 60)
+    """
+    return await _call(f"/assistant/chats/{quote(phone.strip(), safe='')}", {"limit": limit}, timeout=60)
 
 
 # RequestLogging is outermost, so requests the auth layer turns away (401s) are logged too.

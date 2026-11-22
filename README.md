@@ -29,8 +29,10 @@ Both Stay servers listen on 8010, so only one of them can run on a host at a tim
 ### `votes_mcp.py`: PrestoVotes admins (Claude)
 
 Read-only tools: `whoami`, `get_platform_overview`, `list_events`, `get_event`, `get_categories`,
-`get_nominees`, `get_event_transactions`, `search_transactions`, `list_organisers`. What a caller
-sees is decided by PrestoVotes:
+`get_nominees`, `get_event_transactions`, `search_transactions`, `list_organisers`, and, for staff,
+what the WhatsApp assistant has been doing: `assistant_brief`, `assistant_inbox`,
+`list_assistant_chats`, `get_assistant_chat` (PrestoVotes `/api/v1/mcp/assistant/*`, which reads the
+chats from Q). What a caller sees is decided by PrestoVotes:
 
 - Presto staff see the whole platform.
 - An organiser sees only their own event, and voter phone numbers come back masked.
