@@ -254,8 +254,8 @@ async def get_nominees(
     page_size: int = 50,
 ) -> dict[str, Any]:
     """
-    An event's nominees with votes, category, code and approval status. Sorted by votes this is the
-    leaderboard; filter by category for a category's standings.
+    An event's nominees with votes, category, code, approval status and photoUrl (null when they have
+    no photo). Sorted by votes this is the leaderboard; filter by category for a category's standings.
 
     Args:
         slug: the event's slug
