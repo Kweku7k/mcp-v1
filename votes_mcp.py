@@ -220,7 +220,8 @@ async def list_events(
 @mcp.tool(annotations=READ_ONLY)
 async def get_event(slug: str, days: int = 30) -> dict[str, Any]:
     """
-    One event in detail: settings (voting/nominations open, results hidden, cost per vote, dates),
+    One event in detail: settings (voting/nominations open, results hidden, cost per vote, dates,
+    whatsappGroup: the nominees' WhatsApp group link, null if none),
     all-time votes, revenue, payments, organiser share and votes by channel, counts of categories,
     approved and pending nominees and contacts, and the last `days` days vs the period before with a
     daily series.

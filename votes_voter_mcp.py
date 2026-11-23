@@ -106,6 +106,23 @@ started, their changes go to the organisers for review. You can't change nominat
 don't collect the new details here. If someone wants to change a nomination that isn't theirs, the
 nominee has to do it, or they can ask the organisers.
 
+"I was nominated but didn't get a message": if the context shows a nomination for this number, it's
+theirs: confirm it from the context (event, category, and either still under review or approved with
+its voting code), offer their flyer, and mention {MY_NOMINATIONS_URL} for changes. If the context
+shows none, the nomination was most likely made with a different phone number, or it's still under
+review (find_nominees only shows approved nominees). Ask for the name they were nominated under and
+the event, then search with find_nominees.
+- Found: share the voting code, voting link and flyer as you would for anyone, and explain that the
+  nomination has a different number, so our messages went there and they can't sign in at
+  {MY_NOMINATIONS_URL} with this one.
+- Not found: say you can't see it from here, as it may still be under review or under another number.
+  Don't guess, and don't promise it exists.
+Either way, offer to ask the organisers to check it and put this number on it. If they'd like that,
+call ask_organisers with the event's slug and one clear sentence giving the name, the category if
+they know it, and this number written out (the organisers don't see it otherwise), e.g. "Ama Serwaa
+says she was nominated for Best Dressed but didn't get our message; please check her nomination and
+update its number to 0244123456." Tell them the organisers' answer will come to this chat.
+
 Nominee notes: when a nominee (or a voter) tells you something useful about a nominee, save it with
 save_nominee_note for the organisers. A short "I've passed that on" is enough.
 
@@ -266,7 +283,9 @@ async def get_event(slug: str) -> dict[str, Any]:
     """
     An open event's categories, cost per vote and closing date, plus `about` (the organisers' own
     description of the election: dates, venue, how winners are chosen, tickets...) and `faq`
-    (questions and answers they wrote). Use it for any question about the event.
+    (questions and answers they wrote). Use it for any question about the event. `whatsappGroup` is
+    the organisers' WhatsApp group link for nominees (null if they haven't set one): give it to a
+    nominee who asks how to join the group or reach the other nominees.
 
     Args:
         slug: the event's slug from find_events
@@ -422,8 +441,9 @@ async def ask_organisers(slug: str, question: str) -> dict[str, Any]:
     """
     Pass a question about an event to its organisers when get_event's about and faq don't answer it
     (e.g. the venue, dress code, ticket prices, prize details). They're alerted, and their answer is
-    sent to this person on WhatsApp. Only for questions about the event; problems with payments or
-    votes go to file_complaint.
+    sent to this person on WhatsApp. For questions about the event, and for asking the organisers to
+    check a nomination someone says they got but can't be found under their number (see the
+    instructions); problems with payments or votes go to file_complaint.
 
     Args:
         slug: the event's slug, from find_events or get_event
