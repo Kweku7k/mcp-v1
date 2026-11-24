@@ -399,7 +399,10 @@ async def get_assistant_chat(phone: str, limit: int = 60) -> dict[str, Any]:
 
 
 # RequestLogging is outermost, so requests the auth layer turns away (401s) are logged too.
-app = RequestLogging(mcp.http_app(), log.getChild("http"))
+# Stateless with plain JSON replies: some clients (e.g. Viktor on Slack) can't read the
+# Mcp-Session-Id response header, and every tool is a read-only call authorised by its own bearer
+# token, so there's no session state to keep.
+app = RequestLogging(mcp.http_app(stateless_http=True, json_response=True), log.getChild("http"))
 
 if __name__ == "__main__":
     # log_config=None keeps uvicorn's logs in our console format (mcp_logs.setup); RequestLogging
