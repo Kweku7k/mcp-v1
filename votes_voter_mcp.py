@@ -544,8 +544,17 @@ def _runs_text(rows: list) -> str:
 def _complaints_text(rows: list) -> str:
     if not rows:
         return ""
-    lines = [f"- #{r['id']} on {str(r.get('createdAt') or '')[:10]}: {r.get('summary')}" for r in rows]
-    return "\n".join(["Complaints they've made recently (the team follows these up):", *lines])
+    lines = []
+    for r in rows:
+        line = f"- #{r['id']} on {str(r.get('createdAt') or '')[:10]}: {r.get('summary')}"
+        if r.get("status") == "resolved":
+            line += f" Resolved by the team on {str(r.get('resolvedAt') or '')[:10]}."
+            if r.get("whatWeToldThem"):
+                line += f" We sent them: {r['whatWeToldThem']}"
+        else:
+            line += " Still open: the team is following it up."
+        lines.append(line)
+    return "\n".join(["Complaints they've made recently:", *lines])
 
 
 def _questions_text(rows: list) -> str:

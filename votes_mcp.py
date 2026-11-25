@@ -1,4 +1,4 @@
-"""FastMCP server for PrestoVotes admins (read-only).
+"""FastMCP server for PrestoVotes admins (read-only, except staff resolving WhatsApp complaints).
 
 Wraps the PrestoVotes MCP data API (/api/v1/mcp on prestovotes.com). Every request needs a bearer
 token, which PrestoVotes issues when someone connects Claude from prestovotes.com/connect-claude
@@ -44,6 +44,9 @@ REQUEST_TIMEOUT_SECONDS = 30
 TOKEN_CACHE_SECONDS = 60
 
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
+# Resolving a complaint can message the voter on WhatsApp, so it isn't idempotent; it destroys nothing
+# (a resolved complaint can be reopened).
+WRITES = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True)
 
 INSTRUCTIONS = """
 Read-only access to PrestoVotes, a Ghanaian voting platform for awards and pageants where the
@@ -54,12 +57,19 @@ Amounts are in GHS. "organiserShare" is the organiser's cut of revenue (organise
 Start with whoami to see the connection's scope. Presto staff ("platform") can use every tool; an
 organiser ("award") can only read their own event, so pass that event's slug, and
 get_platform_overview, search_transactions and list_organisers will refuse them. Voter phone
-numbers are masked for organisers. Nothing here can change data.
+numbers are masked for organisers. The only tools that change anything are resolve_complaint and
+reopen_complaint (staff only).
 
 Presto staff can also see what the PrestoVotes WhatsApp assistant (which answers voters on Q) has
 been doing: for "brief me" call assistant_brief and summarise it in plain language; for "what needs
 me" or "my inbox" call assistant_inbox; to read conversations use list_assistant_chats and
 get_assistant_chat. Times are UTC, which is Ghana time.
+
+Complaints voters filed on WhatsApp stay open until staff resolve them: list_complaints shows them,
+and resolve_complaint marks one done, optionally sending the voter a message on WhatsApp first.
+Before resolving, read the chat (and check the payment if there is one), then show the user the exact
+message you'd send and get their go-ahead: it goes to a real person from the PrestoVotes number. If
+the message can't be delivered, the complaint stays open and the reason comes back; say so plainly.
 """.strip()
 
 
@@ -73,34 +83,42 @@ class VotesClient:
 
     async def get(self, token: str, path: str, params: dict[str, Any] | None = None,
                   timeout: float = REQUEST_TIMEOUT_SECONDS) -> dict[str, Any]:
+        return await self.request("GET", token, path, params=params, timeout=timeout)
+
+    async def request(self, method: str, token: str, path: str, params: dict[str, Any] | None = None,
+                      body: dict[str, Any] | None = None, timeout: float = REQUEST_TIMEOUT_SECONDS) -> dict[str, Any]:
         clean = {k: (str(v).lower() if isinstance(v, bool) else v) for k, v in (params or {}).items() if v is not None}
 
         started = time.perf_counter()
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.get(
+                response = await client.request(
+                    method,
                     f"{self.base_url}{path}",
                     params=clean,
+                    json=body,
                     headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
                 )
         except httpx.TimeoutException as exc:
-            log_api_call(log, "GET", path, started, None, "timed out")
+            log_api_call(log, method, path, started, None, "timed out")
             raise VotesAPIError("The PrestoVotes API request timed out.") from exc
         except httpx.RequestError as exc:
-            log_api_call(log, "GET", path, started, None, f"{exc.__class__.__name__}: {exc}")
+            log_api_call(log, method, path, started, None, f"{exc.__class__.__name__}: {exc}")
             raise VotesAPIError(f"Could not connect to the PrestoVotes API: {exc}") from exc
 
         try:
             body = response.json()
         except ValueError:
             body = {"error": response.text[:500]}
-        log_api_call(log, "GET", path, started, response.status_code,
+        log_api_call(log, method, path, started, response.status_code,
                      body.get("error") if response.status_code >= 400 else None)
 
         if response.status_code in (401, 403):
             raise VotesAPIError(body.get("error") or f"Not authorised (HTTP {response.status_code}).")
         if response.status_code == 404:
             raise VotesAPIError(body.get("error") or "Not found (HTTP 404). Organisers can only see their own event.")
+        if response.status_code == 409:  # e.g. a complaint's message didn't reach them; the error says why
+            raise VotesAPIError(body.get("error") or "That couldn't be done (HTTP 409).")
         if response.status_code >= 400:
             raise VotesAPIError(f"PrestoVotes API returned HTTP {response.status_code}: {body.get('error') or body}")
         return body
@@ -136,12 +154,13 @@ class PrestoVotesTokenVerifier(TokenVerifier):
 
 
 async def _call(path: str, params: dict[str, Any] | None = None,
-                timeout: float = REQUEST_TIMEOUT_SECONDS) -> dict[str, Any]:
+                timeout: float = REQUEST_TIMEOUT_SECONDS, method: str = "GET",
+                payload: dict[str, Any] | None = None) -> dict[str, Any]:
     access = get_access_token()
     if access is None:
         return {"success": False, "error": "Not signed in to PrestoVotes. Reconnect the connector."}
     try:
-        body = await votes_client.get(access.token, path, params, timeout=timeout)
+        body = await votes_client.request(method, access.token, path, params=params, body=payload, timeout=timeout)
     except VotesAPIError as exc:
         return {"success": False, "error": str(exc)}
     result = {"success": True, "data": body.get("data")}
@@ -364,8 +383,9 @@ async def assistant_inbox() -> dict[str, Any]:
     """
     Staff only. What's waiting on a person from the WhatsApp assistant: voter questions organisers
     haven't answered yet (oldest first, with hours waiting), answers that didn't reach the voter on
-    WhatsApp, and WhatsApp complaints from the last 7 days. Each item has the voter's phone; use
-    get_assistant_chat to read the conversation and search_transactions to check a payment.
+    WhatsApp, and WhatsApp complaints nobody has resolved yet (oldest first, with days open). Each
+    item has the voter's phone; use get_assistant_chat to read the conversation,
+    search_transactions to check a payment, and resolve_complaint once a complaint is dealt with.
     """
     return await _call("/assistant/inbox")
 
@@ -398,9 +418,54 @@ async def get_assistant_chat(phone: str, limit: int = 60) -> dict[str, Any]:
     return await _call(f"/assistant/chats/{quote(phone.strip(), safe='')}", {"limit": limit}, timeout=60)
 
 
+@mcp.tool(annotations=READ_ONLY)
+async def list_complaints(status: str = "open", page: int = 1, page_size: int = 50) -> dict[str, Any]:
+    """
+    Staff only. Complaints voters filed with the WhatsApp assistant, newest first: what they
+    reported (with the payment ref and event if they gave one), their phone, when, and for resolved
+    ones who resolved it, when, and the message we sent them (replyStatus "sent" means it reached
+    WhatsApp).
+
+    Args:
+        status: "open" (default), "resolved" or "all"
+        page: page number, from 1
+        page_size: 1-200
+    """
+    return await _call("/assistant/complaints", {"status": status, "page": page, "pageSize": page_size})
+
+
+@mcp.tool(annotations=WRITES)
+async def resolve_complaint(complaint_id: int, message: str | None = None) -> dict[str, Any]:
+    """
+    Staff only. Marks a WhatsApp complaint resolved. With a message, first sends it to the voter on
+    WhatsApp from the PrestoVotes number (into their chat, so the assistant sees it if they reply;
+    outside WhatsApp's 24-hour window only an approved template can go). If the message can't be
+    delivered, nothing is resolved and the error says why: tell the user, and offer to resolve it
+    without a message. Show the user the exact message and get their OK before calling this.
+
+    Args:
+        complaint_id: the complaint's id, from assistant_inbox or list_complaints
+        message: what to tell them, in plain words (up to 2,000 characters); leave out to resolve quietly
+    """
+    return await _call(f"/assistant/complaints/{int(complaint_id)}/resolve", method="POST",
+                       payload={"message": message}, timeout=60)
+
+
+@mcp.tool(annotations=WRITES)
+async def reopen_complaint(complaint_id: int) -> dict[str, Any]:
+    """
+    Staff only. Reopens a resolved WhatsApp complaint, e.g. when it was resolved by mistake or the
+    voter says the problem is back. Sends them nothing.
+
+    Args:
+        complaint_id: the complaint's id
+    """
+    return await _call(f"/assistant/complaints/{int(complaint_id)}/reopen", method="POST")
+
+
 # RequestLogging is outermost, so requests the auth layer turns away (401s) are logged too.
 # Stateless with plain JSON replies: some clients (e.g. Viktor on Slack) can't read the
-# Mcp-Session-Id response header, and every tool is a read-only call authorised by its own bearer
+# Mcp-Session-Id response header, and every tool is a single API call authorised by its own bearer
 # token, so there's no session state to keep.
 app = RequestLogging(mcp.http_app(stateless_http=True, json_response=True), log.getChild("http"))
 
